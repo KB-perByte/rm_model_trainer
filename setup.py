@@ -16,12 +16,12 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="network-config-parser-ai",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Sagar Paul",
+    author_email="paul.sagar@yahoo.com",
     description="AI-powered system for generating network configuration parsers",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/network-config-parser-ai",
+    url="https://github.com/KB-perByte/rm_model_trainer",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",

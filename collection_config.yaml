@@ -1,0 +1,34 @@
+# Collection Training Configuration
+# This file defines the paths to your Ansible collections for training
+
+# Base path to your collections (relative to this script)
+collection_base_path: '/home/sagpaul/Work/AnsibleNetwork/collections'
+
+# Collection configurations
+collections:
+  - name: 'cisco_ios'
+    argspec_path: 'cisco/ios/plugins/module_utils/network/ios/argspec'
+    rm_template_path: 'cisco/ios/plugins/module_utils/network/ios/rm_templates'
+    enabled: true
+
+  # Add more collections as needed
+  # - name: "cisco_nxos"
+  #   argspec_path: "cisco/nxos/plugins/module_utils/network/nxos/argspec"
+  #   rm_template_path: "cisco/nxos/plugins/module_utils/network/nxos/rm_templates"
+  #   enabled: true
+
+  # - name: "arista_eos"
+  #   argspec_path: "arista/eos/plugins/module_utils/network/eos/argspec"
+  #   rm_template_path: "arista/eos/plugins/module_utils/network/eos/rm_templates"
+  #   enabled: false
+
+# Model configuration
+model:
+  name: 'multi_vendor_parser_model'
+  storage_path: './trained_models' # Local storage path
+
+# Training parameters
+training:
+  batch_size: 4
+  epochs: 10
+  validation_split: 0.2

@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MacOS
+.DS_Store
+
+# Training outputs
+trained_models/
+*.model
+*.checkpoint
+logs/
+runs/
+wandb/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.pytest_cache/
+
+# Data files (if large)
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+
+# ansible
+.ansible/
+
+# Local config overrides
+local_config.yaml
+config_local.yaml
+
+# Keep privacy utility scripts
+!disable_wandb.py

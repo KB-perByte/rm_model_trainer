@@ -1,0 +1,52 @@
+# Core Deep Learning Framework
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Transformers and NLP
+transformers>=4.30.0
+tokenizers>=0.13.0
+datasets>=2.12.0
+accelerate>=0.20.0
+
+# Data Processing and Analysis
+pandas>=1.5.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# Configuration and Serialization
+pyyaml>=6.0
+toml>=0.10.2
+
+# Logging and Progress
+tqdm>=4.65.0
+wandb>=0.15.0  # Optional: for experiment tracking
+tensorboard>=2.13.0  # Optional: for training visualization
+
+# Text Processing
+nltk>=3.8.0
+regex>=2023.6.3
+
+# Jinja Template Processing (for setval templates)
+jinja2>=3.1.0
+
+# File and Path Handling
+pathlib2>=2.3.7  # For Python < 3.4 compatibility
+
+# Development and Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+
+# Optional: GPU acceleration (uncomment if using CUDA)
+# torch-audio>=2.0.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+# torch>=2.0.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+# torchvision>=0.15.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+
+# Memory optimization
+psutil>=5.9.0
+
+# JSON processing for complex configurations
+jsonschema>=4.17.0

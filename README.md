@@ -1,5 +1,7 @@
 # Network Configuration Parser AI Trainer
 
+**\*** Cursor has been used to Generate Readmes and structure code.
+
 🤖 An AI-powered system that learns from Ansible collection parsers to generate regex-based configuration parsers for network devices.
 
 ## 🎯 What It Does

@@ -10,15 +10,16 @@ import json
 import re
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from transformers import (
     AutoTokenizer,
-    AutoModel,
+    T5ForConditionalGeneration,
     TrainingArguments,
     Trainer,
-    PreTrainedModel,
+    DataCollatorForSeq2Seq,
     PreTrainedTokenizer,
 )
+import inspect
 from typing import Dict, List, Tuple, Any, Optional
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -82,137 +83,27 @@ class ConfigParserDataset(Dataset):
             return_tensors="pt",
         )
 
+        labels = targets["input_ids"].squeeze()
+        # Mask pad tokens so loss ignores padding
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
         return {
             "input_ids": inputs["input_ids"].squeeze(),
             "attention_mask": inputs["attention_mask"].squeeze(),
-            "labels": targets["input_ids"].squeeze(),
+            "labels": labels,
         }
 
 
-class ConfigParserModel(PreTrainedModel):
-    """Custom model for generating network configuration parsers."""
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.encoder = AutoModel.from_pretrained("microsoft/codebert-base")
-        self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d_model=768, nhead=8, batch_first=True),
-            num_layers=6,
-        )
-        self.output_projection = nn.Linear(768, self.encoder.config.vocab_size)
-
-    def get_input_embeddings(self):
-        """Return the input embeddings from the encoder."""
-        return self.encoder.get_input_embeddings()
-
-    def set_input_embeddings(self, value):
-        """Set the input embeddings for the encoder."""
-        self.encoder.set_input_embeddings(value)
-
-    def get_output_embeddings(self):
-        """Return the output embeddings (projection layer)."""
-        return self.output_projection
-
-    def set_output_embeddings(self, new_embeddings):
-        """Set the output embeddings (projection layer)."""
-        self.output_projection = new_embeddings
-
-    def resize_token_embeddings(self, new_num_tokens):
-        """Resize token embeddings for both encoder and output projection."""
-        # Resize encoder embeddings
-        self.encoder.resize_token_embeddings(new_num_tokens)
-
-        # Resize output projection
-        old_embeddings = self.output_projection
-        new_embeddings = nn.Linear(old_embeddings.in_features, new_num_tokens)
-
-        # Copy weights for existing tokens
-        old_num_tokens = old_embeddings.out_features
-        new_embeddings.weight.data[: min(old_num_tokens, new_num_tokens)] = (
-            old_embeddings.weight.data[: min(old_num_tokens, new_num_tokens)]
-        )
-
-        self.output_projection = new_embeddings
-        return new_embeddings
-
-    def generate(
-        self,
-        input_ids,
-        attention_mask=None,
-        max_length=512,
-        num_beams=4,
-        early_stopping=True,
-        pad_token_id=None,
-        **kwargs,
-    ):
-        """Generate method for inference compatibility."""
-        # For now, implement a simple greedy decoding
-        # In a full implementation, you'd want proper beam search
-
-        batch_size = input_ids.size(0)
-
-        # Encode the input
-        encoder_outputs = self.encoder(
-            input_ids=input_ids, attention_mask=attention_mask
-        )
-
-        # Start with input_ids as the generated sequence
-        generated = input_ids.clone()
-
-        # Simple greedy generation (can be improved with beam search)
-        for _ in range(max_length - input_ids.size(1)):
-            # Get decoder outputs
-            decoder_outputs = self.decoder(
-                tgt=encoder_outputs.last_hidden_state,
-                memory=encoder_outputs.last_hidden_state,
-            )
-            logits = self.output_projection(decoder_outputs)
-
-            # Get next token (greedy)
-            next_token = logits[:, -1:, :].argmax(dim=-1)
-
-            # Append to generated sequence
-            generated = torch.cat([generated, next_token], dim=1)
-
-            # Check for early stopping (if all sequences have pad_token_id)
-            if early_stopping and pad_token_id is not None:
-                if (next_token == pad_token_id).all():
-                    break
-
-        return generated
-
-    def forward(self, input_ids, attention_mask=None, labels=None):
-        # Encode the input (config + argspec)
-        encoder_outputs = self.encoder(
-            input_ids=input_ids, attention_mask=attention_mask
-        )
-
-        if labels is not None:
-            # During training, use teacher forcing
-            decoder_outputs = self.decoder(
-                tgt=encoder_outputs.last_hidden_state,
-                memory=encoder_outputs.last_hidden_state,
-            )
-            logits = self.output_projection(decoder_outputs)
-
-            # Calculate loss
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
-            return {"loss": loss, "logits": logits}
-        else:
-            # During inference
-            decoder_outputs = self.decoder(
-                tgt=encoder_outputs.last_hidden_state,
-                memory=encoder_outputs.last_hidden_state,
-            )
-            logits = self.output_projection(decoder_outputs)
-            return {"logits": logits}
+"""
+Note: A custom seq2seq has been replaced with a pretrained encoder-decoder (T5)
+for stability and better generation quality.
+"""
 
 
 class NetworkConfigParserAI:
     """Main class for training and using the network config parser AI."""
 
-    def __init__(self, model_name: str = "microsoft/codebert-base"):
+    def __init__(self, model_name: str = "t5-small"):
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = None
@@ -285,32 +176,62 @@ class NetworkConfigParserAI:
         train_dataset = ConfigParserDataset(train_data, self.tokenizer)
         val_dataset = ConfigParserDataset(val_data, self.tokenizer)
 
-        # Initialize model
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(self.model_name)
-        self.model = ConfigParserModel(config)
+        # Initialize model (pretrained encoder-decoder)
+        self.model = T5ForConditionalGeneration.from_pretrained(self.model_name)
+        # Resize embeddings to include our added special tokens
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        # Training arguments - completely disable external logging
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=10,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
-            warmup_steps=500,
-            weight_decay=0.01,
-            logging_dir=f"{output_dir}/logs",
-            logging_steps=100,
-            eval_strategy="steps",  # Updated from evaluation_strategy
-            eval_steps=500,
-            save_steps=1000,
-            save_total_limit=3,
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
-            report_to=[],  # Empty list = no external logging (wandb, tensorboard, etc.)
-            disable_tqdm=False,  # Keep console progress bars
+        # Build TrainingArguments robustly across transformers versions
+        ta_params = {
+            "output_dir": output_dir,
+            "num_train_epochs": 10,
+            "per_device_train_batch_size": 4,
+            "per_device_eval_batch_size": 4,
+            "warmup_steps": 500,
+            "weight_decay": 0.01,
+            "logging_dir": f"{output_dir}/logs",
+            "logging_steps": 100,
+            "save_steps": 1000,
+            "save_total_limit": 3,
+            "report_to": [],
+            "disable_tqdm": False,
+        }
+
+        sig = inspect.signature(TrainingArguments.__init__)
+
+        def supports(name: str) -> bool:
+            return name in sig.parameters
+
+        # Prefer step-based eval/save/logging when supported; keep them consistent
+        eval_enabled = False
+        if supports("evaluation_strategy"):
+            ta_params["evaluation_strategy"] = "steps"
+            ta_params["eval_steps"] = 500
+            eval_enabled = True
+        elif supports("evaluate_during_training"):
+            ta_params["evaluate_during_training"] = True
+            ta_params["eval_steps"] = 500
+            eval_enabled = True
+
+        if supports("logging_strategy"):
+            ta_params["logging_strategy"] = "steps" if eval_enabled else "no"
+        if supports("save_strategy"):
+            ta_params["save_strategy"] = "steps" if eval_enabled else "no"
+
+        if supports("load_best_model_at_end") and eval_enabled:
+            ta_params["load_best_model_at_end"] = True
+        if supports("metric_for_best_model") and eval_enabled:
+            ta_params["metric_for_best_model"] = "eval_loss"
+        if supports("greater_is_better") and eval_enabled:
+            ta_params["greater_is_better"] = False
+        # Optional mixed precision if available
+        if supports("fp16"):
+            ta_params["fp16"] = False
+
+        training_args = TrainingArguments(**ta_params)
+
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer=self.tokenizer, model=self.model
         )
 
         # Initialize trainer
@@ -320,6 +241,7 @@ class NetworkConfigParserAI:
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
             tokenizer=self.tokenizer,
+            data_collator=data_collator,
         )
 
         # Train
@@ -334,14 +256,13 @@ class NetworkConfigParserAI:
     def load_model(self, model_path: str):
         """Load a trained model with robust tokenizer handling."""
         try:
-            # Try to load the tokenizer from the saved model first
+            # Prefer tokenizer from saved model
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
             logger.info(
                 f"Loaded tokenizer from saved model with {len(self.tokenizer)} tokens"
             )
         except Exception as e:
             logger.warning(f"Could not load tokenizer from model path: {e}")
-            # Fallback to base tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
         # Ensure special tokens are added (in case tokenizer doesn't have them)
@@ -359,63 +280,15 @@ class NetworkConfigParserAI:
         if num_added > 0:
             logger.info(f"Added {num_added} special tokens to tokenizer")
 
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(model_path)
-
-        # Try to load the model with more robust error handling
+        # Load model (T5) and handle potential embedding size differences
         try:
-            self.model = ConfigParserModel.from_pretrained(model_path, config=config)
+            self.model = T5ForConditionalGeneration.from_pretrained(model_path)
             logger.info("Successfully loaded model from checkpoint")
         except Exception as e:
-            if "size mismatch" in str(e):
-                logger.warning(f"Embedding size mismatch detected: {e}")
-                logger.info("Attempting to load model with embedding resize...")
-
-                # Create a fresh model and then load state dict manually
-                self.model = ConfigParserModel(config)
-
-                # Load the state dict and handle embedding mismatch
-                import torch
-                from pathlib import Path
-
-                # Check for both safetensors and pytorch formats
-                safetensors_path = Path(f"{model_path}/model.safetensors")
-                pytorch_path = Path(f"{model_path}/pytorch_model.bin")
-
-                if safetensors_path.exists():
-                    logger.info("Loading from safetensors format")
-                    from safetensors.torch import load_file
-
-                    checkpoint = load_file(safetensors_path)
-                elif pytorch_path.exists():
-                    logger.info("Loading from pytorch format")
-                    checkpoint = torch.load(pytorch_path, map_location="cpu")
-                else:
-                    raise FileNotFoundError(f"No model file found at {model_path}")
-
-                # Get current and saved embedding sizes
-                current_embed_size = self.model.get_input_embeddings().num_embeddings
-                saved_embed_size = checkpoint[
-                    "encoder.embeddings.word_embeddings.weight"
-                ].shape[0]
-
-                logger.info(
-                    f"Current embedding size: {current_embed_size}, Saved: {saved_embed_size}"
-                )
-
-                if current_embed_size != saved_embed_size:
-                    # Resize current model to match saved model
-                    logger.info(
-                        f"Resizing model embeddings to match saved model ({saved_embed_size})"
-                    )
-                    self.model.resize_token_embeddings(saved_embed_size)
-
-                # Now load the state dict
-                self.model.load_state_dict(checkpoint, strict=False)
-                logger.info("Successfully loaded model with embedding size adjustment")
-            else:
-                raise e
+            logger.warning(
+                f"Model load warning: {e}. Loading base and adjusting embeddings if needed."
+            )
+            self.model = T5ForConditionalGeneration.from_pretrained(self.model_name)
 
         self.model.eval()
 
@@ -460,30 +333,39 @@ class NetworkConfigParserAI:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_length=512,
-                num_beams=4,
+                max_new_tokens=256,
+                num_beams=6,
+                length_penalty=1.0,
+                no_repeat_ngram_size=3,
                 early_stopping=True,
-                pad_token_id=self.tokenizer.pad_token_id,
             )
 
         # Decode
         generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-        try:
-            # Parse the generated parser JSON
-            parser_json = generated_text.split("GENERATE_PARSER:")[-1].strip()
-            if parser_json:
-                parser = json.loads(parser_json)
-                return parser
-            else:
-                # If no output after GENERATE_PARSER, use fallback
-                raise json.JSONDecodeError("No parser generated", "", 0)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse generated parser: {e}")
-            logger.info("Using fallback rule-based parser generation")
+        # Try to parse a JSON object after the instruction token
+        parser_json = generated_text.split("GENERATE_PARSER:")[-1].strip()
 
-            # Fallback: Generate a simple parser based on the config pattern
+        parser = self._parse_and_validate_json(parser_json)
+        if parser is None:
+            # Attempt to salvage a JSON block from the full text (best-effort)
+            parser = self._parse_and_validate_json(
+                self._extract_json_block(generated_text)
+            )
+
+        if parser is None:
+            logger.error(
+                "Failed to parse any valid parser JSON from model output. Falling back."
+            )
             return self._generate_fallback_parser(config_lines, argspec)
+
+        # Validate and repair regex + structure
+        repaired = self._validate_and_repair_parser(parser, config_lines, argspec)
+        if repaired is None:
+            logger.error("Validation/repair failed. Using fallback parser.")
+            return self._generate_fallback_parser(config_lines, argspec)
+
+        return repaired
 
     def _generate_fallback_parser(self, config_lines: List[str], argspec: Dict) -> Dict:
         """Generate a simple rule-based parser when AI generation fails."""
@@ -549,6 +431,95 @@ class NetworkConfigParserAI:
             "result": result_dict,
             "note": "Generated by fallback rule-based logic",
         }
+
+    def _extract_json_block(self, text: str) -> str:
+        """Best-effort extraction of a JSON object from free-form text."""
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return text[start : end + 1]
+        return ""
+
+    def _parse_and_validate_json(self, s: str) -> Optional[Dict]:
+        """Parse JSON string into a dict; return None if invalid/empty."""
+        if not s:
+            return None
+        try:
+            obj = json.loads(s)
+        except Exception as e:
+            logger.debug(f"JSON parse error: {e}")
+            return None
+        if not isinstance(obj, dict):
+            logger.debug("Parsed JSON is not an object")
+            return None
+        return obj
+
+    def _validate_and_repair_parser(
+        self, parser: Dict, config_lines: List[str], argspec: Dict
+    ) -> Optional[Dict]:
+        """Ensure required fields exist; repair common regex issues; return None if irreparable."""
+        parser = dict(parser)  # shallow copy
+
+        # Ensure keys exist
+        if "getval" not in parser or not isinstance(parser.get("getval"), str):
+            logger.debug("Missing or invalid 'getval' in parser JSON")
+            return None
+        if "result" not in parser or not isinstance(parser.get("result"), dict):
+            logger.debug("Missing or invalid 'result' in parser JSON")
+            return None
+        if "name" not in parser or not isinstance(parser.get("name"), str):
+            # Synthesize a name from the first word as a fallback
+            first_word = (
+                config_lines[0].strip().split()[0]
+                if config_lines and config_lines[0].strip()
+                else "config"
+            )
+            parser["name"] = f"{first_word}.generated"
+
+        pattern = parser.get("getval", "")
+        fixed_pattern = self._repair_regex(pattern)
+
+        # Try compile original; if fails, try repaired
+        try:
+            re.compile(pattern)
+            compiled_ok = True
+        except Exception:
+            compiled_ok = False
+
+        if not compiled_ok:
+            try:
+                re.compile(fixed_pattern)
+                parser["getval"] = fixed_pattern
+                compiled_ok = True
+            except Exception as e:
+                logger.debug(f"Regex still invalid after repair: {e}")
+                return None
+
+        return parser
+
+    def _repair_regex(self, pattern: str) -> str:
+        """Attempt simple repairs for common regex issues: unbalanced parens, stray code fences."""
+        p = pattern.strip()
+        # Strip code fences/backticks if present
+        if p.startswith("```") and p.endswith("```"):
+            p = p.strip("`")
+        # Balance parentheses by adding missing closers
+        open_paren = p.count("(")
+        close_paren = p.count(")")
+        if open_paren > close_paren:
+            p = p + (")" * (open_paren - close_paren))
+        elif close_paren > open_paren:
+            # remove extra trailing closers conservatively
+            extra = close_paren - open_paren
+            i = len(p) - 1
+            while extra > 0 and i >= 0:
+                if p[i] == ")":
+                    p = p[:i] + p[i + 1 :]
+                    extra -= 1
+                i -= 1
+        # Remove non-printable characters
+        p = "".join(ch for ch in p if ch.isprintable())
+        return p
 
     def suggest_parser_improvements(
         self, existing_parser: Dict, config_lines: List[str]
